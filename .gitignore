@@ -1,0 +1,35 @@
+# Python 字节码缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+cpython-*.pyc
+
+# 环境变量（密钥敏感文件）
+.env
+.env.local
+.env.dev
+.env.prod
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# 日志、缓存
+*.log
+.cache/
+.trae/
+
+# IDE/编辑器临时文件
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 编译/打包产物
+dist/
+build/
+*.egg-info
+.env
