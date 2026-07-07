@@ -1,8 +1,11 @@
 from flask import Flask
+import os
 
 from internal.router import Router
 from config import Config
 from injector import Injector
+from internal.exception import CustomException
+from pkg.response import fail_json, json, Response
 
 
 class Http(Flask):
@@ -12,5 +15,25 @@ class Http(Flask):
         super().__init__(*args, **kwargs)
         # 注册应用路由
         router.register_router(self)
+        # 捕获异常并处理
+        self.register_error_handler(Exception, self._register_error_handler)
         # 应用配置
         self.config.from_object(config)
+
+    def _register_error_handler(self, error: Exception):
+        """注册异常处理函数"""
+        # 1. 异常是自定义异常，是业务异常
+        if isinstance(error, CustomException):
+            return json(
+                Response(
+                    code=error.code,
+                    message=error.message,
+                    data=error.data if error.data is not None else {},
+                )
+            )
+
+        # 2. 异常是程序、数据库等非自定义异常
+        if os.getenv("FLASK_ENV") == "development":
+            raise error
+        else:
+            return fail_json(str(error))

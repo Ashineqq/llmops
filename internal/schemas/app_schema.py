@@ -3,7 +3,7 @@ from wtforms import StringField
 from wtforms.validators import DataRequired, Length
 
 
-class AppCompletionReq(FlaskForm):
+class CompletionReq(FlaskForm):
     query = StringField(
         "query",
         validators=[
