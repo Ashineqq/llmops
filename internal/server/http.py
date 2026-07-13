@@ -3,7 +3,6 @@ import os
 
 from internal.router import Router
 from config import Config
-from injector import Injector
 from internal.exception import CustomException
 from pkg.response import fail_json, json, Response
 
@@ -11,8 +10,8 @@ from pkg.response import fail_json, json, Response
 class Http(Flask):
     """http服务引擎"""
 
-    def __init__(self, *args, router: Injector.get(Router), config: Config, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, router: Router, config: Config, **kwargs):
+        super().__init__(*args, **kwargs) 
         # 注册应用路由
         router.register_router(self)
         # 捕获异常并处理
