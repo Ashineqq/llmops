@@ -7,12 +7,21 @@ from internal.exception import CustomException
 from pkg.response import fail_json, json, Response
 from pkg.sqlalchemy import SQLAlchemy
 from internal.model import App
+from flask_migrate import Migrate
 
 
 class Http(Flask):
     """http服务引擎"""
 
-    def __init__(self, *args, db: SQLAlchemy, router: Router, config: Config, **kwargs):
+    def __init__(
+        self,
+        *args,
+        migrate: Migrate,
+        db: SQLAlchemy,
+        router: Router,
+        config: Config,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         # 捕获异常并处理
         self.register_error_handler(Exception, self._register_error_handler)
@@ -20,6 +29,7 @@ class Http(Flask):
         self.config.from_object(config)
         # 初始化数据库
         db.init_app(self)
+        migrate.init_app(self, db, directory="internal/migration")
         with self.app_context():
             _ = App()
             db.create_all()
