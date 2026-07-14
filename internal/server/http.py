@@ -5,7 +5,7 @@ from internal.router import Router
 from config import Config
 from internal.exception import CustomException
 from pkg.response import fail_json, json, Response
-from flask_sqlalchemy import SQLAlchemy
+from pkg.sqlalchemy import SQLAlchemy
 from internal.model import App
 
 

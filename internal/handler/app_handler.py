@@ -37,7 +37,6 @@ class AppHandler:
     def update_app(self, id: uuid.UUID):
         """更新应用"""
         app = self.app_service.update_app(id)
-
         return success_message(f"应用ID为{id}的应用已更新，新名称：{app.name}")
 
     def delete_app(self, id: uuid.UUID):
