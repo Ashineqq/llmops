@@ -5,19 +5,26 @@ from internal.router import Router
 from config import Config
 from internal.exception import CustomException
 from pkg.response import fail_json, json, Response
+from flask_sqlalchemy import SQLAlchemy
+from internal.model import App
 
 
 class Http(Flask):
     """http服务引擎"""
 
-    def __init__(self, *args, router: Router, config: Config, **kwargs):
-        super().__init__(*args, **kwargs) 
-        # 注册应用路由
-        router.register_router(self)
+    def __init__(self, *args, db: SQLAlchemy, router: Router, config: Config, **kwargs):
+        super().__init__(*args, **kwargs)
         # 捕获异常并处理
         self.register_error_handler(Exception, self._register_error_handler)
         # 应用配置
         self.config.from_object(config)
+        # 初始化数据库
+        db.init_app(self)
+        with self.app_context():
+            _ = App()
+            db.create_all()
+        # 注册应用路由
+        router.register_router(self)
 
     def _register_error_handler(self, error: Exception):
         """注册异常处理函数"""
