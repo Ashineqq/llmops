@@ -12,6 +12,7 @@ from injector import inject
 import uuid
 from langchain_core.prompts import PromptTemplate
 from langchain_deepseek import ChatDeepSeek
+from langchain_core.output_parsers import StrOutputParser
 
 
 @inject
@@ -52,13 +53,12 @@ class AppHandler:
         query = form.query.data
 
         prompt_template = PromptTemplate.from_template("{query}")
-
         llm = ChatDeepSeek(
             model="deepseek-v4-flash",
         )
+        parser = StrOutputParser()
 
-        ai_message = llm.invoke(prompt_template.invoke({"query": query}))
-        print(f"AI Message: {ai_message}")
-        content = ai_message.content
+        chain = prompt_template | llm | parser
+        content = chain.invoke({"query": query})
 
         return success_json({"content": content})
