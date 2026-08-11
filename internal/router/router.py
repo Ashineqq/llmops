@@ -13,8 +13,8 @@ class Router:
 
     def register_router(self, app: Flask):
 
-        # 1.创建蓝图
-        bp = Blueprint("llmops", __name__, url_prefix="")
+        # 1.创建蓝图（url_prefix="/api"：所有接口统一 /api 前缀，与前端 proxy 对齐）
+        bp = Blueprint("llmops", __name__, url_prefix="/api")
 
         # 2.将url与对应的控制器方法做绑定
         bp.add_url_rule(
