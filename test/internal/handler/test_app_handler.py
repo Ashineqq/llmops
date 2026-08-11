@@ -1,9 +1,17 @@
-import os
 import json
-from unittest.mock import patch, MagicMock
+import os
+from unittest.mock import patch
 
 import pytest
-from openai import OpenAI
+
+
+def _parse_sse(resp) -> list[str]:
+    """从 SSE 响应中提取所有 data: 行的值"""
+    return [
+        line[len("data:") :].strip()
+        for line in resp.text.splitlines()
+        if line.startswith("data:")
+    ]
 
 
 class TestAppHandler:
@@ -11,56 +19,65 @@ class TestAppHandler:
 
     @pytest.fixture(autouse=True)
     def setup_env(self):
-        """每个测试前设置必要的环境变量"""
+        """每个测试前设置必要的环境变量并清理断点续传缓存"""
         os.environ["DEEPSEEK_API_KEY"] = "test-api-key"
         os.environ["DEEPSEEK_BASE_URL"] = "https://test.deepseek.com"
+        from internal.handler import app_handler as h
+
+        h._sse_cache.clear()
         yield
-        # 清理环境变量
         os.environ.pop("DEEPSEEK_API_KEY", None)
         os.environ.pop("DEEPSEEK_BASE_URL", None)
+
+    @pytest.fixture
+    def mock_chain(self):
+        """mock langchain 组件，返回 chain mock（chain.stream 可控制）"""
+        with (
+            patch("internal.handler.app_handler.ChatDeepSeek") as mock_llm,
+            patch("internal.handler.app_handler.PromptTemplate") as mock_prompt,
+            patch("internal.handler.app_handler.StrOutputParser") as mock_parser,
+        ):
+            chain = (
+                mock_prompt.from_template.return_value
+                | mock_llm.return_value
+                | mock_parser.return_value
+            )
+            yield chain, mock_llm
 
     # ──────────────────────────────
     # completion — 成功场景
     # ──────────────────────────────
 
-    @patch("internal.handler.app_handler.OpenAI")
-    def test_completion_success(self, mock_openai, client):
-        """正常请求应返回 completion 内容"""
-        # 模拟 OpenAI 客户端的返回值
-        mock_instance = MagicMock()
-        mock_openai.return_value = mock_instance
-
-        mock_choice = MagicMock()
-        mock_choice.message.content = "你好，我是 DeepSeek AI 助手"
-        mock_completion = MagicMock()
-        mock_completion.choices = [mock_choice]
-        mock_instance.chat.completions.create.return_value = mock_completion
+    def test_completion_success(self, mock_chain, client):
+        """正常请求应以 SSE 流式返回完整内容"""
+        chain, _ = mock_chain
+        chain.stream.return_value = iter(["你好", "，我是", "AI"])
 
         resp = client.post(
-            "/v1/chat/completions",
+            "/api/v1/chat/completions",
             data=json.dumps({"query": "你好"}),
             content_type="application/json",
         )
 
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["code"] == "success"
-        assert data["data"]["completion"] == "你好，我是 DeepSeek AI 助手"
+        assert resp.content_type.startswith("text/event-stream")
+        data_lines = _parse_sse(resp)
+        contents = [json.loads(line)["content"] for line in data_lines[:-1]]
+        assert "".join(contents) == "你好，我是AI"
+        assert data_lines[-1] == "[DONE]"
 
-        # 验证 OpenAI 客户端构造参数
-        mock_openai.assert_called_once_with(
-            api_key="test-api-key",
-            base_url="https://test.deepseek.com",
+    def test_completion_default_model(self, mock_chain, client):
+        """未显式指定时 ChatDeepSeek 使用默认模型"""
+        chain, mock_llm = mock_chain
+        chain.stream.return_value = iter(["OK"])
+
+        client.post(
+            "/api/v1/chat/completions",
+            data=json.dumps({"query": "hi"}),
+            content_type="application/json",
         )
 
-        # 验证 API 调用参数
-        mock_instance.chat.completions.create.assert_called_once_with(
-            model="deepseek-v4-flash",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant"},
-                {"role": "user", "content": "你好"},
-            ],
-        )
+        mock_llm.assert_called_once_with(model="deepseek-v4-flash")
 
     # ──────────────────────────────
     # completion — 校验失败
@@ -69,7 +86,7 @@ class TestAppHandler:
     def test_completion_missing_query(self, client):
         """缺少 query 字段应返回 validation_error"""
         resp = client.post(
-            "/v1/chat/completions",
+            "/api/v1/chat/completions",
             data=json.dumps({}),
             content_type="application/json",
         )
@@ -82,7 +99,7 @@ class TestAppHandler:
     def test_completion_empty_query(self, client):
         """query 为空字符串应返回 validation_error"""
         resp = client.post(
-            "/v1/chat/completions",
+            "/api/v1/chat/completions",
             data=json.dumps({"query": ""}),
             content_type="application/json",
         )
@@ -91,11 +108,10 @@ class TestAppHandler:
         data = resp.get_json()
         assert data["code"] == "validation_error"
 
-    @patch("internal.handler.app_handler.OpenAI")
-    def test_completion_query_too_long(self, mock_openai, client):
+    def test_completion_query_too_long(self, client):
         """query 超过 1024 字符应返回 validation_error"""
         resp = client.post(
-            "/v1/chat/completions",
+            "/api/v1/chat/completions",
             data=json.dumps({"query": "a" * 1025}),
             content_type="application/json",
         )
@@ -105,51 +121,67 @@ class TestAppHandler:
         assert data["code"] == "validation_error"
         assert "1024" in data["message"] or "1024" in str(data["data"])
 
-        # 验证 OpenAI 没有被调用
-        mock_openai.assert_not_called()
-
     # ──────────────────────────────
     # completion — 异常场景
     # ──────────────────────────────
 
-    @patch("internal.handler.app_handler.OpenAI")
-    def test_completion_openai_api_error(self, mock_openai, client):
-        """OpenAI API 调用失败应返回 fail_json"""
-        mock_instance = MagicMock()
-        mock_openai.return_value = mock_instance
-        mock_instance.chat.completions.create.side_effect = Exception("Invalid API key")
+    def test_completion_stream_error(self, mock_chain, client):
+        """chain 抛异常应返回 SSE error 分块"""
+        chain, _ = mock_chain
+        chain.stream.side_effect = Exception("Invalid API key")
 
         resp = client.post(
-            "/v1/chat/completions",
+            "/api/v1/chat/completions",
             data=json.dumps({"query": "你好"}),
             content_type="application/json",
         )
 
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["code"] == "fail"
-        assert data["data"] == "Invalid API key"
+        data_lines = _parse_sse(resp)
+        payload = json.loads(data_lines[0])
+        assert "error" in payload
+        assert payload["error"] == "Invalid API key"
 
-    @patch("internal.handler.app_handler.OpenAI")
-    def test_completion_default_base_url(self, mock_openai, client):
-        """未设置 DEEPSEEK_BASE_URL 时应使用默认值"""
-        os.environ.pop("DEEPSEEK_BASE_URL", None)
+    # ──────────────────────────────
+    # completion — 断点续传
+    # ──────────────────────────────
 
-        mock_instance = MagicMock()
-        mock_openai.return_value = mock_instance
-        mock_choice = MagicMock()
-        mock_choice.message.content = "OK"
-        mock_completion = MagicMock()
-        mock_completion.choices = [mock_choice]
-        mock_instance.chat.completions.create.return_value = mock_completion
+    def test_completion_events_carry_id(self, mock_chain, client):
+        """带 stream_id 时每个事件应携带自增 id"""
+        chain, _ = mock_chain
+        chain.stream.return_value = iter(["你好", "世界"])
 
-        client.post(
-            "/v1/chat/completions",
-            data=json.dumps({"query": "hi"}),
+        resp = client.post(
+            "/api/v1/chat/completions",
+            data=json.dumps({"query": "hi", "stream_id": "sid-1"}),
             content_type="application/json",
         )
 
-        mock_openai.assert_called_once_with(
-            api_key="test-api-key",
-            base_url="https://api.deepseek.com",
+        assert resp.status_code == 200
+        assert "id: 1" in resp.text
+        assert "id: 2" in resp.text
+
+    def test_completion_resume_from_last_event_id(self, mock_chain, client):
+        """断线重连（带 Last-Event-ID）应只续发后续内容"""
+        chain, _ = mock_chain
+        chain.stream.return_value = iter(["你好", "世界"])
+
+        resp1 = client.post(
+            "/api/v1/chat/completions",
+            data=json.dumps({"query": "hi", "stream_id": "sid-1"}),
+            content_type="application/json",
         )
+        data1 = _parse_sse(resp1)
+        assert "".join(json.loads(line)["content"] for line in data1[:-1]) == "你好世界"
+
+        # 模拟客户端已收到 id: 1 后断线重连
+        resp2 = client.post(
+            "/api/v1/chat/completions",
+            data=json.dumps({"query": "hi", "stream_id": "sid-1"}),
+            headers={"Last-Event-ID": "1"},
+            content_type="application/json",
+        )
+        data2 = _parse_sse(resp2)
+        contents2 = [json.loads(line)["content"] for line in data2[:-1]]
+        assert "".join(contents2) == "世界"
+        assert data2[-1] == "[DONE]"
